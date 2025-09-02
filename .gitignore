@@ -1,0 +1,10 @@
+bin/
+build/
+data/
+lib/
+.vscode/
+C++_fun.md
+problem.odt
+version.md
+
+

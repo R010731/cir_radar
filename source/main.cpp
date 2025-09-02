@@ -1,0 +1,129 @@
+#include "cuda_signal_process.hpp"
+#include <spdlog/spdlog.h>
+
+
+int main(){
+    setGPU();
+    uint32_t* ram_ptr;
+    //设置进程优先级最高；
+    int retval = nice(-20);
+    int cal_count = 0;    
+    // 文件读取指针的位置    
+    streampos current_pos;
+
+    // 四个数据指针
+    uint32_t* cpi_data_begin = nullptr;
+
+    while(cal_count < 1){
+        cal_count++;
+        // 读取文件，解析数据
+        cpi_data_begin = data_read(current_pos);
+
+        // 设置读取第几个CPI
+        // if (cal_count < 4){
+        //     continue;
+        // }
+        // data_read(current_pos, cpi_data_begin);
+        // -------------------构建cpi数据-----------------------------//
+        // 找到ddc_data起始位置
+        cpi_data_t cpi_data(cpi_data_begin);
+        uint32_t* ddc_data_begin;
+        // 保留原始指针，cudaFreeHost
+        ddc_data_begin = cpi_data_begin;
+        ddc_data_begin += CMD_PARAMS_LEN / 4;
+        #if STATUS_INFO_VALID == 1
+                ddc_data_begin += STATUS_INFO_LEN / 4;
+        #endif
+        ddc_data_begin += SELF_TEST_LEN / 4;
+        long long data_transfer_begin = getTimeInMicroseconds();
+        cuComplex* ddc_data_begin_64 = (cuComplex*) ddc_data_begin;
+        int debug = 0;
+
+        // ddc数据迁移
+        // 参数获取
+        int prf_total_pulse = cpi_data.cmd_params->pulse_params.prf_total_pulse;
+        int narrow_pulse_pc_fft_points = cpi_data.cmd_params->PC_params.narrow_pulse_pc_fft_points;
+        int wide_pulse_pc_fft_points = cpi_data.cmd_params->PC_params.wide_pulse_pc_fft_points;
+        int narrow_points = cpi_data.cmd_params->pulse_params.narrow_pulse_valid_point/8;
+        int wide_points = cpi_data.cmd_params->pulse_params.wide_pulse_valid_point/8;
+        int chn_total = 36;
+        uint8_t pitch_beam_num = cpi_data.cmd_params->work_mode.pitch_beam_num;
+        uint8_t azi_beam_num[3];
+        azi_beam_num[0] = cpi_data.cmd_params->work_mode.azimuth_beam_num[0];
+        azi_beam_num[1] = cpi_data.cmd_params->work_mode.azimuth_beam_num[1];
+        azi_beam_num[2] = cpi_data.cmd_params->work_mode.azimuth_beam_num[2];
+
+        // ddc数据迁移
+        cudaStream_t stream_memcpy;  // 数据拷贝流
+        cudaStreamCreate(&stream_memcpy);
+        cuComplex* d_ddc_data = nullptr;
+
+
+        // 测试是否阻塞
+        long long is_async_begin = getTimeInMicroseconds();
+        ErrorCheck(cudaMalloc((void**)&d_ddc_data,prf_total_pulse * chn_total  * (narrow_points + wide_points)* sizeof(cuComplex)), __FILE__, __LINE__);
+        ErrorCheck(cudaMemcpyAsync(d_ddc_data, ddc_data_begin_64, prf_total_pulse * chn_total * (narrow_points + wide_points)* sizeof(cuComplex), cudaMemcpyHostToDevice, stream_memcpy), __FILE__, __LINE__);
+        long long is_async_end = getTimeInMicroseconds();
+        // cout << is_async_end - is_async_begin << endl;
+        long long data_transfer_end = getTimeInMicroseconds();
+        spdlog::info("数据迁移时间：{}", data_transfer_end - data_transfer_begin);
+        // 实例化类
+        int azi_sector_num[3]={0,1,2};
+        size_t GPU_MTD_abs = prf_total_pulse * (narrow_points + wide_points) * sizeof(float) * 4;
+        // 指针数组
+        float *d_MTD_abs[3] = {nullptr};
+        long long cal_begin = getTimeInMicroseconds();
+        ErrorCheck(cudaMalloc((void**)&d_MTD_abs[0], GPU_MTD_abs), __FILE__, __LINE__);
+        ErrorCheck(cudaMalloc((void**)&d_MTD_abs[1], GPU_MTD_abs), __FILE__, __LINE__);   
+        ErrorCheck(cudaMalloc((void**)&d_MTD_abs[2], GPU_MTD_abs), __FILE__, __LINE__);
+
+        spdlog::info("prf_cnt:{}, wide_points:{}, narrow_points:{}", prf_total_pulse, wide_points, narrow_points);
+        cuda_signal_porcess cuda_signal_porcess(cpi_data, d_ddc_data, debug);
+        // #pragma omp parallel for shared(cpi_data, d_ddc_data, azi_sector_num, debug) schedule(dynamic)
+        // process里面的DBF系数的cudaMemcpy起到同步流的作用，在ddc数据的拷贝完成后才会进行默认流操作
+        for(int i = 0;i < 3;i++){
+            cuda_signal_porcess.process(cpi_data, d_ddc_data, azi_sector_num[i], debug, d_MTD_abs[i]);
+        }
+
+        // #pragma omp parallel sections shared(cpi_data, d_ddc_data, azi_sector_num, debug)
+        // {
+        //     #pragma omp section
+        //     {
+        //         cuda_signal_porcess cuda_signal_porcess_0(cpi_data, d_ddc_data, azi_sector_num[0], debug, d_MTD_abs[0]);
+        //         cuda_signal_porcess_0.process(cpi_data, d_ddc_data, azi_sector_num[0], debug, d_MTD_abs[0]);
+        //     }
+        //     #pragma omp section
+        //     {
+        //         cuda_signal_porcess cuda_signal_porcess_1(cpi_data, d_ddc_data, azi_sector_num[1], debug, d_MTD_abs[1]);
+        //         cuda_signal_porcess_1.process(cpi_data, d_ddc_data, azi_sector_num[1], debug, d_MTD_abs[1]);
+        //     }
+        //     #pragma omp section
+        //     {
+        //         cuda_signal_porcess cuda_signal_porcess_2(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
+        //         cuda_signal_porcess_2.process(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
+        //     }
+        // }
+
+        // cuda_signal_porcess cuda_signal_porcess_0(cpi_data, d_ddc_data, azi_sector_num[0], debug, d_MTD_abs[0]);
+        // cuda_signal_porcess_0.process(cpi_data, d_ddc_data, azi_sector_num[0], debug, d_MTD_abs[0]);
+        // cuda_signal_porcess cuda_signal_porcess_1(cpi_data, d_ddc_data,azi_sector_num[1], debug, d_MTD_abs[1]);
+        // cuda_signal_porcess_1.process(cpi_data, d_ddc_data, azi_sector_num[1], debug, d_MTD_abs[1]);
+        // cuda_signal_porcess cuda_signal_porcess_2(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
+        // cuda_signal_porcess_2.process(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
+
+        // cudaDeviceSynchronize();
+        long long cal_end = getTimeInMicroseconds();
+        cudaDeviceSynchronize();
+        spdlog::info("三扇区运算时间: {}", cal_end -cal_begin);
+        // cout << "三扇区运算时间"<<cal_end -cal_begin << endl;
+        // 数据释放
+
+        ErrorCheck(cudaFreeAsync(d_MTD_abs[0], stream_memcpy), __FILE__, __LINE__);
+        ErrorCheck(cudaFreeAsync(d_MTD_abs[1], stream_memcpy), __FILE__, __LINE__);
+        ErrorCheck(cudaFreeAsync(d_MTD_abs[2], stream_memcpy), __FILE__, __LINE__);
+        ErrorCheck(cudaFreeAsync(d_ddc_data, stream_memcpy), __FILE__, __LINE__);
+        ErrorCheck(cudaFreeHost(cpi_data_begin), __FILE__, __LINE__);
+        ErrorCheck(cudaStreamDestroy(stream_memcpy), __FILE__, __LINE__);
+    }
+    return 1;
+}
