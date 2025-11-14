@@ -1,7 +1,7 @@
 nsys profile --stats=true -o cir_radar ./cir_radar 生成CUDA分析报告
 nsys profile --trace=cuda,osrt,opengl -o cir_radar ./cir_radar
 nsys profile -o report_name ./your_program
-
+ncu --set full -o test -f ./cir_radar  // 输出内核分析文件，强制覆盖
 其中，report_name是生成的报告文件名，./your_program是要分析的可执行程序。该命令会生成一个.nsys-rep格式的报告文件，包含详细的性能数据。
 常用命令行参数:
     --stats=true：在分析后打印统计信息。
@@ -42,3 +42,4 @@ MTD核函数：两个点数不同的void regular_fft_factor实现，总用时597
 
 
 2. GPU 接口速率和带宽：https://blog.csdn.net/u013431916/article/details/81912266
+https://blog.csdn.net/s_sunnyy/article/details/79027379

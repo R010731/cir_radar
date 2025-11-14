@@ -88,7 +88,7 @@ namespace radar_signal_process
 	inline void rsl_cfar::params_update(int curr_params_id)
 	{
 		if(params_id != curr_params_id){
-			// range_protect_units = INT_PARAMS("Range_protect_units");
+			range_protect_units = INT_PARAMS("Range_protect_units");
 			// range_average_units = INT_PARAMS("Range_average_units");
 			// velocity_protect_units = INT_PARAMS("Velocity_protect_units");
 			// velocity_average_units = INT_PARAMS("Velocity_average_units");

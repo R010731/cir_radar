@@ -87,7 +87,8 @@ find_package(CUDA REQUIRED)
 set(CMAKE_CUDA_ARCHITECTURES "80")
 set_target_properties(cir_radar PROPERTIES CUDA_ARCHITECTURES "80")
 
-
+# 设置 CUDA 编译选项以静态链接
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -DSTATIC_LINKING")
 target_link_libraries(${PROJECT_NAME} PRIVATE 
     CUDA::cudart
     CUDA::cublas
