@@ -1,6 +1,53 @@
 #include "cuda_signal_process.hpp"
 #include <spdlog/spdlog.h>
 
+// 文件名
+string file_path = "/media/ryh/新加卷/ryh/D/0";
+
+
+// 函数封装
+void setupCufftPlans(cufftHandle* pc_handle, cufftHandle* MTD_handle, cudaStream_t* streams,
+                     int prf_total_pulse, int wide_pulse_pc_fft_points, int narrow_pulse_pc_fft_points,
+                     int narrow_points, int wide_points, int index) {
+    // 创建宽窄PC FFT计划
+    checkCufftError(cufftPlan1d(&pc_handle[index * 2], wide_pulse_pc_fft_points, CUFFT_C2C, prf_total_pulse));
+    checkCufftError(cufftPlan1d(&pc_handle[index * 2 + 1], narrow_pulse_pc_fft_points, CUFFT_C2C, prf_total_pulse));
+    
+    // 绑定对应的CUDA流
+    checkCufftError(cufftSetStream(pc_handle[index * 2], streams[0]));
+    checkCufftError(cufftSetStream(pc_handle[index * 2 + 1], streams[1]));
+
+    // MTD参数设置
+    int MTD_narrow_rank = 1;   // 维
+    int MTD_narrow_n[1] = { prf_total_pulse };    // 每一维变换数目
+    int MTD_narrow_inembed[2] = { narrow_pulse_pc_fft_points, prf_total_pulse }; // 输入数据的步幅
+    int MTD_narrow_istride = narrow_pulse_pc_fft_points; // 输入每个 FFT 的数据步幅
+    int MTD_narrow_idist = 1; // 不同 FFT 之间的距离
+    int MTD_narrow_onembed[2] = { prf_total_pulse, narrow_points }; // 输出数据的步幅
+    int MTD_narrow_ostride = narrow_points; // 输出每个 FFT 的数据步幅
+    int MTD_narrow_odist = 1;
+    int MTD_narrow_batch = narrow_points;   // narrow_pulse_pc_fft_points次FFT
+
+    int MTD_wide_rank = 1;   // 维
+    int MTD_wide_n[1] = { prf_total_pulse };    // 每一维变换数目
+    int MTD_wide_inembed[2] = { wide_pulse_pc_fft_points, prf_total_pulse }; // 输入数据的步幅
+    int MTD_wide_istride = wide_pulse_pc_fft_points; // 输入每个 FFT 的数据步幅
+    int MTD_wide_idist = 1; // 不同 FFT 之间的距离
+    int MTD_wide_onembed[2] = { prf_total_pulse, wide_points }; // 输出数据的步幅
+    int MTD_wide_ostride = wide_points; // 输出每个 FFT 的数据步幅
+    int MTD_wide_odist = 1;
+    int MTD_wide_batch = wide_points;   // wide_pulse_pc_fft_points次FFT
+
+    // 创建宽窄MTD计划
+    checkCufftError(cufftPlanMany(&MTD_handle[index * 2], MTD_wide_rank, MTD_wide_n, MTD_wide_inembed, MTD_wide_istride, MTD_wide_idist, MTD_wide_onembed, MTD_wide_ostride, MTD_wide_odist, CUFFT_C2C, MTD_wide_batch));
+    checkCufftError(cufftPlanMany(&MTD_handle[index * 2 + 1], MTD_narrow_rank, MTD_narrow_n, MTD_narrow_inembed, MTD_narrow_istride, MTD_narrow_idist, MTD_narrow_onembed, MTD_narrow_ostride, MTD_narrow_odist, CUFFT_C2C, MTD_narrow_batch));
+
+    // 绑定对应的CUDA流
+    checkCufftError(cufftSetStream(MTD_handle[index * 2], streams[0]));
+    checkCufftError(cufftSetStream(MTD_handle[index * 2 + 1], streams[1]));
+}
+
+
 
 int main(){
     setGPU();
@@ -17,9 +64,9 @@ int main(){
 
     // cuda流创建，DBF句柄创建，PC句柄创建，MTD句柄创建
     cudaStream_t streams[2];
-    cublasHandle_t handle_dbf[2];
-    // pc句柄 6个句柄，0和1是一号波束的宽窄，2和3是二号波束的宽窄，4和5是三号波束的宽窄
-    // MTD句柄 6个句柄，0和1是一号波束的宽窄，2和3是二号波束的宽窄，4和5是三号波束的宽窄
+    cublasHandle_t handle_dbf[6];
+    // pc句柄 18个句柄，0和1是一号波束的宽窄，2和3是二号波束的宽窄，4和5是三号波束的宽窄
+    // MTD句柄 18个句柄，0和1是一号波束的宽窄，2和3是二号波束的宽窄，4和5是三号波束的宽窄
     cufftHandle pc_handle[6];
 
     // MTD句柄
@@ -27,57 +74,51 @@ int main(){
 
     for (int i = 0; i < 2; ++i) {
         cudaStreamCreate(&streams[i]);               // 创建CUDA流
+    }
+    for (int i = 0; i < 2; ++i) {
         cublasCreate(&handle_dbf[i]);                // 创建CUBLAS句柄
         cublasSetStream(handle_dbf[i], streams[i]);  // 将CUBLAS句柄与流关联
     }
+    for (int i = 0; i < 2; ++i) {
+        cublasCreate(&handle_dbf[i+2]);                // 创建CUBLAS句柄
+        cublasSetStream(handle_dbf[i+2], streams[i]);  // 将CUBLAS句柄与流关联
+    }
+    for (int i = 0; i < 2; ++i) {
+        cublasCreate(&handle_dbf[i+4]);                // 创建CUBLAS句柄
+        cublasSetStream(handle_dbf[i+4], streams[i]);  // 将CUBLAS句柄与流关联
+    }
 
+    // 参数设置，一次性创建FFT和DBF句柄
+    // 输入参数
     int prf_total_pulse = 2048;
     int wide_pulse_pc_fft_points = 512;
     int narrow_pulse_pc_fft_points = 256;
-    checkCufftError(cufftPlan1d(&pc_handle[0], wide_pulse_pc_fft_points, CUFFT_C2C, prf_total_pulse));
-    checkCufftError(cufftPlan1d(&pc_handle[1], narrow_pulse_pc_fft_points, CUFFT_C2C, prf_total_pulse));
-    checkCufftError(cufftSetStream(pc_handle[0], streams[0]));
-    checkCufftError(cufftSetStream(pc_handle[1], streams[1]));
-
-    // MTD参数设置
-    // 在这里设置避免等待fft句柄创建时阻塞，重叠数据迁移与CPU操作
     int narrow_points = 144;
     int wide_points = 320;
 
-    int MTD_narrow_rank = 1;   //  维
-    int MTD_narrow_n[1] = { prf_total_pulse };    // 每一维变换数目
-    int MTD_narrow_inembed[2] = { narrow_pulse_pc_fft_points, prf_total_pulse }; // 输入数据的步幅
-    int MTD_narrow_istride = narrow_pulse_pc_fft_points; // 输入每个 FFT 的数据步幅
-    int MTD_narrow_idist = 1; // 不同 FFT 之间的距离
-    int MTD_narrow_onembed[2] = { prf_total_pulse, narrow_points }; // 输出数据的步幅
-    int MTD_narrow_ostride = narrow_points; // 输出每个 FFT 的数据步幅
-    int MTD_narrow_odist = 1; //
-    int MTD_narrow_batch = narrow_points;   // narrow_pulse_pc_fft_points次FFT
+    setupCufftPlans(pc_handle, MTD_handle, streams, prf_total_pulse, wide_pulse_pc_fft_points, narrow_pulse_pc_fft_points, narrow_points, wide_points, 0);
 
-    int MTD_wide_rank = 1;   //  维
-    int MTD_wide_n[1] = { prf_total_pulse };    // 每一维变换数目
-    int MTD_wide_inembed[2] = { wide_pulse_pc_fft_points, prf_total_pulse }; // 输入数据的步幅
-    int MTD_wide_istride = wide_pulse_pc_fft_points; // 输入每个 FFT 的数据步幅
-    int MTD_wide_idist = 1; // 不同 FFT 之间的距离
-    int MTD_wide_onembed[2] = { prf_total_pulse, wide_points }; // 输出数据的步幅
-    int MTD_wide_ostride = wide_points; // 输出每个 FFT 的数据步幅
-    int MTD_wide_odist = 1; //
-    int MTD_wide_batch = wide_points;   // wide_pulse_pc_fft_points次FFT
+    prf_total_pulse = 512;
+    wide_pulse_pc_fft_points = 512;
+    narrow_pulse_pc_fft_points = 128;
+    narrow_points = 120;
+    wide_points = 280;
+    setupCufftPlans(pc_handle, MTD_handle, streams, prf_total_pulse, wide_pulse_pc_fft_points, narrow_pulse_pc_fft_points, narrow_points, wide_points, 1);
 
-    checkCufftError(cufftPlanMany(&MTD_handle[0], MTD_wide_rank, MTD_wide_n, MTD_wide_inembed, MTD_wide_istride, MTD_wide_idist, MTD_wide_onembed, MTD_wide_ostride, MTD_wide_odist, CUFFT_C2C, MTD_wide_batch));
-    checkCufftError(cufftPlanMany(&MTD_handle[1], MTD_narrow_rank, MTD_narrow_n, MTD_narrow_inembed, MTD_narrow_istride, MTD_narrow_idist, MTD_narrow_onembed, MTD_narrow_ostride, MTD_narrow_odist, CUFFT_C2C, MTD_narrow_batch));
+    prf_total_pulse = 256;
+    wide_pulse_pc_fft_points = 512;
+    narrow_pulse_pc_fft_points = 128;
+    narrow_points = 120;
+    wide_points = 280;
+    setupCufftPlans(pc_handle, MTD_handle, streams, prf_total_pulse, wide_pulse_pc_fft_points, narrow_pulse_pc_fft_points, narrow_points, wide_points, 2);
 
-    checkCufftError(cufftSetStream(MTD_handle[0], streams[0]));
-    checkCufftError(cufftSetStream(MTD_handle[1], streams[1]));
-
-
-    while(cal_count < 2){
+    while(cal_count < 4){
         cal_count++;
         // 读取文件，解析数据
-        cpi_data_begin = data_read(current_pos);
+        cpi_data_begin = data_read(file_path, current_pos);
 
         // 设置读取第几个CPI
-        // if (cal_count < 1){
+        // if (cal_count < 4){
         //     continue;
         // }
         // data_read(current_pos, cpi_data_begin);
@@ -137,11 +178,24 @@ int main(){
         ErrorCheck(cudaMalloc((void**)&d_MTD_abs[2], GPU_MTD_abs), __FILE__, __LINE__);
 
         spdlog::info("prf_cnt:{}, wide_points:{}, narrow_points:{}", prf_total_pulse, wide_points, narrow_points);
-       long long cal_begin = getTimeInMicroseconds();
+        long long cal_begin = getTimeInMicroseconds();
         // #pragma omp parallel for shared(cpi_data, d_ddc_data, azi_sector_num, debug) schedule(dynamic)
         // process里面的DBF系数的cudaMemcpy起到同步流的作用，在ddc数据的拷贝完成后才会进行默认流操作
         for(int i = 0;i < 3;i++){
-            cuda_signal_porcess.process(cpi_data, d_ddc_data, azi_sector_num[i], debug, d_MTD_abs[i], streams, handle_dbf, pc_handle[0], pc_handle[1], MTD_handle[0], MTD_handle[1]);
+           // 根据不同的雷达参数传入不同的句柄
+            switch (prf_total_pulse) {
+            case 2048:
+                cuda_signal_porcess.process(cpi_data, d_ddc_data, azi_sector_num[i], debug, d_MTD_abs[i], streams, handle_dbf, pc_handle[0], pc_handle[1], MTD_handle[0], MTD_handle[1]);
+                break;
+            case 512:
+                cuda_signal_porcess.process(cpi_data, d_ddc_data, azi_sector_num[i], debug, d_MTD_abs[i], streams, handle_dbf, pc_handle[2], pc_handle[3], MTD_handle[2], MTD_handle[3]);
+                break;
+            case 256:
+                cuda_signal_porcess.process(cpi_data, d_ddc_data, azi_sector_num[i], debug, d_MTD_abs[i], streams, handle_dbf, pc_handle[4], pc_handle[5], MTD_handle[4], MTD_handle[5]);
+                break;
+            default:
+                spdlog::warn("没有对应的雷达参数");
+            }
         }
 
         // #pragma omp parallel sections shared(cpi_data, d_ddc_data, azi_sector_num, debug)
@@ -170,7 +224,7 @@ int main(){
         // cuda_signal_porcess cuda_signal_porcess_2(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
         // cuda_signal_porcess_2.process(cpi_data, d_ddc_data, azi_sector_num[2], debug, d_MTD_abs[2]);
 
-        // cudaDeviceSynchronize();
+        cudaDeviceSynchronize();
         long long cal_end = getTimeInMicroseconds();
         cudaDeviceSynchronize();
         spdlog::info("三扇区运算时间: {}", cal_end -cal_begin);
@@ -187,14 +241,14 @@ int main(){
 
 
 
-    // 释放 cuBLAS Handle
-    for (int i = 0; i < 2; ++i) {
-        cublasDestroy(handle_dbf[i]);
-    }
     // 释放 cuFFT Handle
     for (int i = 0; i < 6; ++i) {
         cufftDestroy(pc_handle[i]);
         cufftDestroy(MTD_handle[i]);
+    }
+    // 释放 cuBLAS Handle
+    for (int i = 0; i < 6; ++i) {
+        cublasDestroy(handle_dbf[i]);
     }
     for (int i = 0; i < 2; ++i) {
         cudaStreamDestroy(streams[i]);

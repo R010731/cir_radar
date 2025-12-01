@@ -7,6 +7,7 @@
 #include <cufft.h>
 #include <cuComplex.h>
 #include <time.h>
+#include <cusolver_common.h>
 
 
 cudaError_t ErrorCheck(cudaError_t error_code, const char* filename, int lineNumber);
@@ -30,3 +31,4 @@ void writeDoubleToFile(const char* filename, double* d_data, size_t size) ;
 void writeIntToFile(const char* filename, int* d_data, size_t size) ;
 void writeFloatToFile(const char* filename, float* d_data, size_t size) ;
 long long getTimeInMicroseconds();
+void ErrorCheckCusolver(cusolverStatus_t status, const char* file, int line);

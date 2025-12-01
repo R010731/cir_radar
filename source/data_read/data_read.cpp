@@ -45,10 +45,9 @@ int data_read(streampos &current_pos, uint32_t* cpi_data_begin){
     }
 }
 
-uint32_t * data_read(streampos &current_pos){
+uint32_t * data_read(const std::string &filename, streampos &current_pos){
     // 1. 打开文件
-    string file_path = "/media/ryh/新加卷/ryh/D/0";
-    std::ifstream in_file(file_path, std::ios::binary);
+    std::ifstream in_file(filename, std::ios::binary);
     if (!in_file) {
         cerr << "文件打开失败" << endl;
         return nullptr;
@@ -57,7 +56,6 @@ uint32_t * data_read(streampos &current_pos){
 
     //2.读取一个CPI数据
     if(!in_file.eof()){
-        
         // 将文件指针移动到之前保存的位置
         in_file.seekg(current_pos);
         //读取命令参数帧头
